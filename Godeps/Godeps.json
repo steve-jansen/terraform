@@ -30,6 +30,7 @@
 		"github.com/hashicorp/terraform/builtin/bins/provider-template",
 		"github.com/hashicorp/terraform/builtin/bins/provider-terraform",
 		"github.com/hashicorp/terraform/builtin/bins/provider-tls",
+		"github.com/hashicorp/terraform/builtin/bins/provider-triton",
 		"github.com/hashicorp/terraform/builtin/bins/provider-vcd",
 		"github.com/hashicorp/terraform/builtin/bins/provider-vsphere",
 		"github.com/hashicorp/terraform/builtin/bins/provisioner-chef",
@@ -63,6 +64,7 @@
 		"github.com/hashicorp/terraform/builtin/providers/template",
 		"github.com/hashicorp/terraform/builtin/providers/terraform",
 		"github.com/hashicorp/terraform/builtin/providers/tls",
+		"github.com/hashicorp/terraform/builtin/providers/triton",
 		"github.com/hashicorp/terraform/builtin/providers/vcd",
 		"github.com/hashicorp/terraform/builtin/providers/vsphere",
 		"github.com/hashicorp/terraform/builtin/provisioners/chef",
@@ -540,6 +542,22 @@
 			"ImportPath": "github.com/jmespath/go-jmespath",
 			"Comment": "0.2.2-2-gc01cf91",
 			"Rev": "c01cf91b011868172fdcd9f41838e80c9d716264"
+		},
+		{
+			"ImportPath": "github.com/joyent/gocommon",
+			"Rev": "40c7818502f7c1ebbb13dab185a26e77b746ff40"
+		},
+		{
+			"ImportPath": "github.com/joyent/gosdc/cloudapi",
+			"Rev": "e5af42dc255d490169eaea98c610cf7660913844"
+		},
+		{
+			"ImportPath": "github.com/joyent/gosign/auth",
+			"Rev": "0da0d5f1342065321c97812b1f4ac0c2b0bab56c"
+		},
+		{
+			"ImportPath": "github.com/juju/loggo",
+			"Rev": "8477fc936adf0e382d680310047ca27e128a309a"
 		},
 		{
 			"ImportPath": "github.com/kardianos/osext",
