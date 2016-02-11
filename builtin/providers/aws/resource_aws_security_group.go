@@ -231,7 +231,7 @@ func resourceAwsSecurityGroupCreate(d *schema.ResourceData, meta interface{}) er
 	}
 
 	// AWS defaults all Security Groups to have an ALLOW ALL egress rule. Here we
-	// revoke that rule, so users don't unknowningly have/use it.
+	// revoke that rule, so users don't unknowingly have/use it.
 	group := resp.(*ec2.SecurityGroup)
 	if group.VpcId != nil && *group.VpcId != "" {
 		log.Printf("[DEBUG] Revoking default egress rule for Security Group for %s", d.Id())
@@ -280,7 +280,9 @@ func resourceAwsSecurityGroupRead(d *schema.ResourceData, meta interface{}) erro
 	remoteIngressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissions)
 	remoteEgressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissionsEgress)
 
+	//
 	// TODO enforce the seperation of ips and security_groups in a rule block
+	//
 
 	localIngressRules := d.Get("ingress").(*schema.Set).List()
 	localEgressRules := d.Get("egress").(*schema.Set).List()
@@ -730,7 +732,7 @@ func matchRules(rType string, local []interface{}, remote []map[string]interface
 						continue
 					}
 
-					// make a copy so not to touch orginal
+					// make a copy so not to touch original
 					remoteSGs := schema.CopySet(rawRemoteSgs.(*schema.Set))
 					if len(remoteSGs.List()) > 0 {
 						localSGs := l["security_groups"].(*schema.Set)
@@ -780,7 +782,7 @@ func matchRules(rType string, local []interface{}, remote []map[string]interface
 				// on security groups or ports, we check the last remaining piece, which
 				// is the self attribute. resourceAwsSecurityGroupIPPermGather does us
 				// the favor of parsing this out of the security_groups set, so if self
-				// is the only attribut set, there will be an empty remote security
+				// is the only attribute set, there will be an empty remote security
 				// groups.
 				if _, ok := l["self"]; ok {
 					if r["self"] == l["self"] {
@@ -796,11 +798,6 @@ func matchRules(rType string, local []interface{}, remote []map[string]interface
 		if rCidrs, ok := r["cidr_blocks"]; ok {
 			if len(rCidrs.([]string)) != 0 {
 				log.Printf("[DEBUG] Found a remote CIDR block rule that wasn't empty: (%#v)", r)
-				// convert/split as needed
-				//
-				// some method
-				//
-				// add what's left of remote to the saves
 				saves = append(saves, r)
 			}
 		}
