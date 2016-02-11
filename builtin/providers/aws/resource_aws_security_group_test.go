@@ -1025,38 +1025,58 @@ resource "aws_security_group" "web" {
 func testAccAWSSecurityGroupConfig_drift_complex() string {
 	return fmt.Sprintf(`
 resource "aws_security_group" "otherweb" {
-  name = "tf_acc_%d"
+  name        = "tf_acc_%d"
   description = "Used in the terraform acceptance tests"
 }
 
 resource "aws_security_group" "web" {
-  name = "tf_acc_%d"
+  name        = "tf_acc_%d"
   description = "Used in the terraform acceptance tests"
 
   ingress {
-    protocol = "tcp"
-    from_port = 80
-    to_port = 8000
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 8000
     cidr_blocks = ["10.0.0.0/8"]
   }
 
   ingress {
-    protocol = "tcp"
-    from_port = 80
-    to_port = 8000
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 8000
     cidr_blocks = ["206.0.0.0/8"]
   }
 
-	ingress {
-    protocol = "tcp"
-    from_port = 22
-    to_port = 22
-		security_groups = ["${aws_security_group.otherweb.id}"]
+  ingress {
+    protocol        = "tcp"
+    from_port       = 22
+    to_port         = 22
+    security_groups = ["${aws_security_group.otherweb.id}"]
   }
 
-	tags {
-		Name = "tf-acc-test"
-	}
-}
-`, acctest.RandInt(), acctest.RandInt())
+  egress {
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 8000
+    cidr_blocks = ["206.0.0.0/8"]
+  }
+
+  egress {
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 8000
+    cidr_blocks = ["10.0.0.0/8"]
+  }
+
+  egress {
+    protocol        = "tcp"
+    from_port       = 22
+    to_port         = 22
+    security_groups = ["${aws_security_group.otherweb.id}"]
+  }
+
+  tags {
+    Name = "tf-acc-test"
+  }
+}`, acctest.RandInt(), acctest.RandInt())
 }
