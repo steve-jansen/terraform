@@ -277,13 +277,24 @@ func resourceAwsSecurityGroupRead(d *schema.ResourceData, meta interface{}) erro
 
 	sg := sgRaw.(*ec2.SecurityGroup)
 
-	ingressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissions)
-	egressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissionsEgress)
+	remoteIngressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissions)
+	remoteEgressRules := resourceAwsSecurityGroupIPPermGather(d.Id(), sg.IpPermissionsEgress)
+
+	// TODO enforce the seperation of ips and security_groups in a rule block
+
+	localIngressRules := d.Get("ingress").(*schema.Set).List()
+	localEgressRules := d.Get("egress").(*schema.Set).List()
+
+	// Loop through the local state of rules, doing a match against the remote
+	// ruleSet we built above.
+	ingressRules := matchRules("ingress", localIngressRules, remoteIngressRules)
+	egressRules := matchRules("egress", localEgressRules, remoteEgressRules)
 
 	d.Set("description", sg.Description)
 	d.Set("name", sg.GroupName)
 	d.Set("vpc_id", sg.VpcId)
 	d.Set("owner_id", sg.OwnerId)
+
 	if err := d.Set("ingress", ingressRules); err != nil {
 		log.Printf("[WARN] Error setting Ingress rule set for (%s): %s", d.Id(), err)
 	}
@@ -596,4 +607,225 @@ func SGStateRefreshFunc(conn *ec2.EC2, id string) resource.StateRefreshFunc {
 		group := resp.SecurityGroups[0]
 		return group, "exists", nil
 	}
+}
+
+// matchRules receives the group id, type of rules, and the local / remote maps
+// of rules. We iterate through the local set of rules trying to find a matching
+// remote rule, which may be structured differently because of how AWS
+// aggregates the rules under the to, from, and type.
+//
+//
+// Matching rules are written to state, with their elements removed from the
+// remote set
+//
+// If no match is found, we'll write the remote rule to state and let the graph
+// sort things out
+func matchRules(rType string, local []interface{}, remote []map[string]interface{}) []map[string]interface{} {
+	// For each local ip or security_group, we need to match against the remote
+	// ruleSet until all ips or security_groups are found
+
+	// saves represents the rules that have been identified to be saved to state,
+	// in the appropriate d.Set("{ingress,egress}") call.
+	var saves []map[string]interface{}
+	for _, raw := range local {
+		l := raw.(map[string]interface{})
+
+		var selfVal bool
+		if v, ok := l["self"]; ok {
+			selfVal = v.(bool)
+		}
+
+		// matching against self is required to detect rules that only include self
+		// as the rule. resourceAwsSecurityGroupIPPermGather parses the group out
+		// and replaces it with self if it's ID is found
+		localHash := idHash(rType, l["protocol"].(string), int64(l["to_port"].(int)), int64(l["from_port"].(int)), selfVal)
+
+		// loop remote rules, looking for a matching hash
+		for _, r := range remote {
+			var remoteSelfVal bool
+			if v, ok := r["self"]; ok {
+				remoteSelfVal = v.(bool)
+			}
+
+			// hash this remote rule and compare it for a match consideration with the
+			// local rule we're examining
+			rHash := idHash(rType, r["protocol"].(string), r["to_port"].(int64), r["from_port"].(int64), remoteSelfVal)
+			if rHash == localHash {
+
+				// compare cidr_blocks
+				if rawRemoteCidrs, ok := r["cidr_blocks"]; ok {
+					// if the remote rule has cidr blocks, but the local does not,
+					// we know there is no match
+					if _, ok := l["cidr_blocks"]; !ok {
+						log.Printf("[DEBUG] Local rule does not have any matching CIDR Blocks")
+						continue
+					}
+
+					remoteCidrs := rawRemoteCidrs.([]string)
+					if len(remoteCidrs) > 0 {
+						// if we have more local cidr blocks than remote cidr blocks, we
+						// already know there is no match found here
+						localCidrs := l["cidr_blocks"].([]interface{})
+						if len(localCidrs) > len(remoteCidrs) {
+							log.Printf("[DEBUG] Local rule has more CIDR blocks, continuing (%d/%d)", len(localCidrs), len(remoteCidrs))
+							continue
+						}
+
+						// length of the cidr blocks we have locally, to know when we've
+						// matched them all
+						localRemaining := len(localCidrs)
+
+						// convert remote cidrs to a set, for easy comparisions
+						var list []interface{}
+						for _, s := range remoteCidrs {
+							list = append(list, s)
+						}
+						remoteCidrSet := schema.NewSet(schema.HashString, list)
+
+						// cidrs we've found a match for.
+						// if we've matched all of them (checked later), we'll add these
+						// back to the local map since they are already in the []string
+						// format we need them in
+						var stringCidrs []string
+						for _, lCidr := range localCidrs {
+							// for each match, pop the remote cidr from the list
+							if remoteCidrSet.Contains(lCidr) {
+								log.Printf("[DEBUG] removing %s from remote CIDR set", lCidr)
+								remoteCidrSet.Remove(lCidr)
+								localRemaining--
+								// append to stringCidrs, to be used later if all matches are
+								// found. d.Get() returns these from the configuration as
+								// []interface{}, so we need to convert
+								stringCidrs = append(stringCidrs, lCidr.(string))
+							}
+						}
+
+						// if we've removed all the locals, establish the new set and add
+						// this local rule to be returned
+						if localRemaining == 0 {
+							var newRemoteCidr []string
+							for _, newCidr := range remoteCidrSet.List() {
+								newRemoteCidr = append(newRemoteCidr, newCidr.(string))
+							}
+
+							// set the remaining cidrs
+							r["cidr_blocks"] = newRemoteCidr
+							// add the l map[string]interface to the saves
+							l["cidr_blocks"] = stringCidrs
+							saves = append(saves, l)
+							continue
+						}
+					} else {
+						log.Printf("[DEBUG] Remote CIDR Block length is zero")
+					}
+				} else {
+					log.Printf("[DEBUG] No remote CIDR Blocks set")
+				}
+
+				// compare Security Groups
+				if rawRemoteSgs, ok := r["security_groups"]; ok {
+					// if local does not have any Security Group Pairs, we know there is no match
+					if _, ok := l["security_groups"]; !ok {
+						log.Printf("[DEBUG] Local rule does not have any matching Security Groups")
+						continue
+					}
+
+					// make a copy so not to touch orginal
+					remoteSGs := schema.CopySet(rawRemoteSgs.(*schema.Set))
+					if len(remoteSGs.List()) > 0 {
+						localSGs := l["security_groups"].(*schema.Set)
+						if len(localSGs.List()) > len(remoteSGs.List()) {
+							log.Printf("[DEBUG] Local rule has more Security Groups, continuing (%d/%d)", len(localSGs.List()), len(remoteSGs.List()))
+							continue
+						}
+
+						// filter through the local security groups looking for the matching
+						// security group id or name. Which shouldn't matter to us (name or
+						// id)
+						localRemaining := len(localSGs.List())
+						// Security Groups we've found a match for.
+						// if we've matched all of them (checked later), we'll add these
+						// back to the local map since they are already in the []string
+						// format we need them in
+						var stringSGs []interface{}
+						for _, lsg := range localSGs.List() {
+							// for each match, pop the remote cidr from the list
+							if remoteSGs.Contains(lsg) {
+								log.Printf("[DEBUG] removing %s from remote SG set", lsg)
+								remoteSGs.Remove(lsg)
+								localRemaining--
+								stringSGs = append(stringSGs, lsg)
+							}
+						}
+
+						// if we've removed all the locals, establish the new set and add
+						// this local rule to be returned
+						if localRemaining == 0 {
+							r["security_groups"] = remoteSGs
+							l["security_groups"] = schema.NewSet(schema.HashString, stringSGs)
+							saves = append(saves, l)
+							continue
+						}
+					} else {
+						log.Printf("[DEBUG] Remote Security Group length is zero")
+					}
+				} else {
+					log.Printf("[DEBUG] No remote Security Group set")
+				}
+
+				// if we've reached this point, we have not found a match based on cidr
+				// blocks and security groups.
+				//
+				// We have however matched on ports and type, but have not fully matched
+				// on security groups or ports, we check the last remaining piece, which
+				// is the self attribute. resourceAwsSecurityGroupIPPermGather does us
+				// the favor of parsing this out of the security_groups set, so if self
+				// is the only attribut set, there will be an empty remote security
+				// groups.
+				if _, ok := l["self"]; ok {
+					if r["self"] == l["self"] {
+						saves = append(saves, r)
+					}
+				}
+			}
+		}
+	}
+
+	// filter out "dead" remotes
+	for _, r := range remote {
+		if rCidrs, ok := r["cidr_blocks"]; ok {
+			if len(rCidrs.([]string)) != 0 {
+				log.Printf("[DEBUG] Found a remote CIDR block rule that wasn't empty: (%#v)", r)
+				// convert/split as needed
+				//
+				// some method
+				//
+				// add what's left of remote to the saves
+				saves = append(saves, r)
+			}
+		}
+
+		if rawSGs, ok := r["security_groups"]; ok {
+			rSGs := rawSGs.(*schema.Set)
+			if len(rSGs.List()) != 0 {
+				log.Printf("[DEBUG] Found a remote Security Group ID rule that wasn't empty: (%#v)", r)
+				saves = append(saves, r)
+			}
+		}
+	}
+
+	return saves
+}
+
+// Creates a unique hash for the type, ports, and protocol, used as a key in
+// maps
+func idHash(rType, protocol string, toPort, fromPort int64, self bool) string {
+	var buf bytes.Buffer
+	buf.WriteString(fmt.Sprintf("%s-", rType))
+	buf.WriteString(fmt.Sprintf("%d-", toPort))
+	buf.WriteString(fmt.Sprintf("%d-", fromPort))
+	buf.WriteString(fmt.Sprintf("%s-", protocol))
+	buf.WriteString(fmt.Sprintf("%t-", self))
+
+	return fmt.Sprintf("rule-%d", hashcode.String(buf.String()))
 }
